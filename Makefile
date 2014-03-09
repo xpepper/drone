@@ -1,3 +1,5 @@
+SHA := $(shell git rev-parse --short HEAD)
+BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
 
 all: embed build
 
@@ -26,13 +28,16 @@ deps:
 	go get github.com/mattn/go-sqlite3
 	go get github.com/russross/meddler
 
-embed:
+embed: js
 	cd cmd/droned   && rice embed
 	cd pkg/template && rice embed
 
+js:
+	cd cmd/droned/assets && find js -name "*.js" ! -name '.*' ! -name "main.js" -exec cat {} \; > js/main.js
+
 build:
 	cd cmd/drone  && go build -o ../../bin/drone
-	cd cmd/droned && go build -o ../../bin/droned
+	cd cmd/droned && go build -ldflags "-X main.version $(SHA)" -o ../../bin/droned
 
 test:
 	go test -v github.com/drone/drone/pkg/build
@@ -78,6 +83,7 @@ clean:
 dpkg:
 	mkdir -p deb/drone/usr/local/bin
 	mkdir -p deb/drone/var/lib/drone
+	mkdir -p deb/drone/var/cache/drone
 	cp bin/drone  deb/drone/usr/local/bin
 	cp bin/droned deb/drone/usr/local/bin
 	-dpkg-deb --build deb/drone

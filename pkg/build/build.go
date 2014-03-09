@@ -121,8 +121,6 @@ func (b *Builder) Run() error {
 		b.BuildState.Finished = time.Now().UTC().Unix()
 		return nil
 	}
-
-	return nil
 }
 
 func (b *Builder) setup() error {
@@ -326,6 +324,49 @@ func (b *Builder) run() error {
 		host.Links = append(host.Links, service.Name[1:]+":"+image.Name)
 	}
 
+	// where are temp files going to go?
+	tmp_path := "/tmp/drone"
+	if len(os.Getenv("DRONE_TMP")) > 0 {
+		tmp_path = os.Getenv("DRONE_TMP")
+	}
+
+	log.Infof("temp directory is %s", tmp_path)
+
+	if err := os.MkdirAll(tmp_path, 0777); err != nil {
+		return fmt.Errorf("Failed to create temp directory at %s: %s", tmp_path, err)
+	}
+
+	// link cached volumes
+	conf.Volumes = make(map[string]struct{})
+	for _, volume := range b.Build.Cache {
+		name := filepath.Clean(b.Repo.Name)
+		branch := filepath.Clean(b.Repo.Branch)
+		volume := filepath.Clean(volume)
+
+		// with Docker, volumes must be an absolute path. If an absolute
+		// path is not provided, then assume it is for the repository
+		// working directory.
+		if strings.HasPrefix(volume, "/") == false {
+			volume = filepath.Join(b.Repo.Dir, volume)
+		}
+
+		// local cache path on the host machine
+		// this path is going to be really long
+		hostpath := filepath.Join(tmp_path, name, branch, volume)
+
+		// check if the volume is created
+		if _, err := os.Stat(hostpath); err != nil {
+			// if does not exist then create
+			os.MkdirAll(hostpath, 0777)
+		}
+
+		host.Binds = append(host.Binds, hostpath+":"+volume)
+		conf.Volumes[volume] = struct{}{}
+
+		// debugging
+		log.Infof("mounting volume %s:%s", hostpath, volume)
+	}
+
 	// create the container from the image
 	run, err := b.dockerClient.Containers.Create(&conf)
 	if err != nil {
@@ -412,21 +453,6 @@ func (b *Builder) writeDockerfile(dir string) error {
 		dockerfile.WriteRun("echo 'StrictHostKeyChecking no' > /root/.ssh/config")
 	}
 
-	dockerfile.WriteEnv("CI", "true")
-	dockerfile.WriteEnv("DRONE", "true")
-	if b.Repo.Branch != "" {
-		dockerfile.WriteEnv("DRONE_BRANCH", b.Repo.Branch)
-	}
-	if b.Repo.Commit != "" {
-		dockerfile.WriteEnv("DRONE_COMMIT", b.Repo.Commit)
-	}
-	if b.Repo.PR != "" {
-		dockerfile.WriteEnv("DRONE_PR", b.Repo.PR)
-	}
-	if b.Repo.Dir != "" {
-		dockerfile.WriteEnv("DRONE_BUILD_DIR", b.Repo.Dir)
-	}
-
 	dockerfile.WriteAdd("proxy.sh", "/etc/drone.d/")
 	dockerfile.WriteEntrypoint("/bin/bash -e /usr/local/bin/drone")
 
@@ -439,6 +465,19 @@ func (b *Builder) writeDockerfile(dir string) error {
 // temp directory to be added to the Image.
 func (b *Builder) writeBuildScript(dir string) error {
 	f := buildfile.New()
+
+	// add environment variables about the build
+	f.WriteEnv("CI", "true")
+	f.WriteEnv("DRONE", "true")
+	f.WriteEnv("DRONE_BRANCH", b.Repo.Branch)
+	f.WriteEnv("DRONE_COMMIT", b.Repo.Commit)
+	f.WriteEnv("DRONE_PR", b.Repo.PR)
+	f.WriteEnv("DRONE_BUILD_DIR", b.Repo.Dir)
+
+	// add /etc/hosts entries
+	for _, mapping := range b.Build.Hosts {
+		f.WriteHost(mapping)
+	}
 
 	// if the repository is remote then we should
 	// add the commands to the build script to
@@ -473,7 +512,7 @@ func (b *Builder) writeProxyScript(dir string) error {
 	// map ip address to localhost
 	for _, container := range b.services {
 		// create an entry for each port
-		for port, _ := range container.NetworkSettings.Ports {
+		for port := range container.NetworkSettings.Ports {
 			proxyfile.Set(port.Port(), container.NetworkSettings.IPAddress)
 		}
 	}
