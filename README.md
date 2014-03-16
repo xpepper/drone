@@ -183,6 +183,12 @@ You can also have Drone launch containers on your custom images by specifying th
 
 ```
 sevices:
+=======
+If you omit the version, Drone will launch the latest version of the database. (For example, if you set `mongodb`, Drone will launch MongoDB 2.4.)
+You can also have Drone launch containers on your custom images by specifying the images' name, repository and ports:
+
+```
+services:
   - customMongoDB yosssi/mongodb:2.4 27017
   - customSomeDB foo/bar 8087,8098
 ```
